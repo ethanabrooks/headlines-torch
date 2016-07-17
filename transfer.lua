@@ -9,57 +9,53 @@ require 'rnn'
 require 'nngraph'
 
 -- hyper-parameters
-local batchSize = 4
-local inSeqLen = 2 -- sequence length
-local outSeqLen = 5 -- sequence length
-local hiddenSize = 3
+batchSize = 3
+inSeqLen =4 -- sequence length
+hiddenSize = 2
+depth = 1
 
-local h = torch.range(1, inSeqLen * batchSize * hiddenSize)
-    :resize(inSeqLen, batchSize, hiddenSize)
-local s = torch.range(1, batchSize * hiddenSize)
-    :resize(batchSize, hiddenSize) + 1
---print(s)
+local Transfer, Parent = torch.class('nn.Transfer', 'nn.Module')
 
-local input_layers = { nn.Sequential(), nn.Sequential() }
-input_layers[2]:add(nn.Replicate(inSeqLen, 1)) -- replicate s x inSeqLen for comparison with h
-local input = {}
-for i = 1, 2 do
-     -- combine batch and seq into one dimension
-    input_layers[i]:add(nn.Reshape(batchSize * inSeqLen, hiddenSize))
-     -- convert Sequential modules into nngraph nodes
-    input[i] = input_layers[i]() -- {batchSize * inSeqLen x hiddenSize,
-                                 --  batchSize * inSeqLen x hiddenSize}
+function Transfer:__init()
+    Parent.__init(self)
+    local make2d     = nn.Reshape(batchSize * inSeqLen, hiddenSize, false)
+    local h, s       = nn.Identity()(), nn.Replicate(inSeqLen, 1)() -- both inSeqLen, batchSize, hiddenSize
+    local h2d, s2d   = make2d(h), make2d(s) -- both inSeqLen * batchSize, hiddenSize
+    local attention  = nn.CosineDistance(){h2d, s2d} -- inSeqLen * batchSize
+    local broadcast  = nn.Replicate(hiddenSize, 2)(attention) -- inSeqLen * batchSize, hiddenSize
+    local hWeighted  = nn.CMulTable(){h2d, broadcast} -- inSeqLen * batchSize, hiddenSize
+    local hOrigShape = nn.Reshape(inSeqLen, batchSize, hiddenSize, false)(hWeighted) -- inSeqLen, batchSize, hiddenSize
+    local gruInput   = nn.Sum(1)(hOrigShape) -- batchSize, hiddenSize
+    local deepGru    = nn.Sequential()
+    for _ = 1, depth do
+        deepGru:add(nn.GRU(hiddenSize, hiddenSize))
+    end
+    self.net = nn.gModule({h, s},
+                          {deepGru(gruInput)}) -- batchSize, hiddenSize
 end
-local output = { nn.CosineDistance()(input) }
---local output = { nn.Mean(2)(nn.CSubTable()(input)) }
-local align = nn.gModule(input, output)
-local attention = align:forward{ h, s }
 
-local input_layers = { nn.Sequential(), nn.Sequential() }
-input_layers[2]:add(nn.Replicate(inSeqLen, 1)) -- replicate s x inSeqLen for comparison with h
-local input = {}
-for i = 1, 2 do
-    -- combine batch and seq into one dimension
-    input_layers[i]:add(nn.Reshape(batchSize * inSeqLen, hiddenSize))
-    -- convert Sequential modules into nngraph nodes
-    input[i] = input_layers[i]() -- {batchSize * inSeqLen x hiddenSize,
-    --  batchSize * inSeqLen x hiddenSize}
+function Transfer:updateOutput(input)
+    assert(_G.memory, "memory is nil")
+    self.output = self.net:updateOutput{_G.memory, input}
+    return self.output
 end
-local output = { nn.CosineDistance()(input) }
---local output = { nn.Mean(2)(nn.CSubTable()(input)) }
-local align = nn.gModule(input, output)
-local attention = align:forward{ h, s }
 
-input = {
-    nn.Reshape(batchSize * inSeqLen, hiddenSize)(), -- memory
-    nn.Replicate(hiddenSize, 2)() -- attention
-}
-local attention_on_h = nn.CMulTable()(input)
-local reshape_to_original = nn.Reshape(inSeqLen, batchSize, hiddenSize)
-local weighted_h = reshape_to_original(attention_on_h) -- inSeqLen x batchSize x hiddenSize
-local dot_on_h = nn.Sum(1)(weighted_h)
+function Transfer:updateGradInput(input, gradOutput)
+    assert(_G.memory, "memory is nil")
+    self.gradInput = self.net:updateGradInput({_G.memory, input}, gradOutput)
+    return self.gradInput
+end
 
-local transfer = nn.gModule(input, {dot_on_h})
-print(transfer:forward{h, attention})
---print(transfer:forward{h, attention}[2])
+function Transfer:accGradParameters(input, gradOutput)
+    assert(_G.memory, "memory is nil")
+    self.net:accGradParameters({_G.memory, input}, gradOutput)
+end
 
+--local h = torch.range(1, inSeqLen * batchSize * hiddenSize)
+--:resize(inSeqLen, batchSize, hiddenSize)
+--local s = torch.range(1, batchSize * hiddenSize)
+--:resize(batchSize, hiddenSize) + 1
+--local net = nn.Transfer()
+--local out = net:forward(s)
+--print(out)
+--print(net:backward(s, out)[2])
