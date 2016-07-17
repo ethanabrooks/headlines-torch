@@ -2,61 +2,137 @@ require 'rnn'
 require 'nngraph'
 require 'ZipRepeating'
 
--- hyper-parameters
-local batchSize = 3
-local seqLen = 4
-local hiddenSize = 2
-local nIndex = 100
 
-_G.memory = torch.range(1, seqLen * batchSize * hiddenSize)
-    :resize(seqLen, batchSize, hiddenSize)
+function decoder(train, inSeqLen, outSeqLen)
+    -- hyper-parameters
+    local batchSize = 3
+    local hiddenSize = 2
+    local nIndex = 1000
+    local nClasses = 6
+    local depth = 3
 
-require 'transfer'
+    --- build start: {h, y} -> {h, y, s}
+    local h, y = nn.Identity()(), nn.Identity()()
+    local start = nn.gModule({h, y}, {h, y, nn.Select(1, inSeqLen)(h)})
 
-local feedback = nn.Sequential()
-local concat = nn.ConcatTable()
-local embedMax = nn.Sequential()
+    --- build merge for r_train: {{h, y}, {s, y_pred}} -> {h, y, s}
+    local table, s = nn.Identity()(), nn.SelectTable(1)()
+    local h = nn.SelectTable(1)(table)
+    local y = nn.SelectTable(2)(table)
+    local merge = nn.gModule({ table, s }, { h, y, s })
 
--- build feedback
-feedback:add(concat)
-concat:add(nn.Copy(nil, nil, true))
-concat:add(embedMax)
-embedMax:add(nn.ArgMax(2, 2))
-embedMax:add(nn.LookupTable(nIndex, hiddenSize))
-feedback:add(nn.CAddTable())
+    --- build transfer: {h, s} -> t
+    local make2d  = nn.Reshape(batchSize * inSeqLen, hiddenSize, false) -- for weighting across timesteps and batches
+    local combine = nn.Sequential() -- combines s_tm1 with embed(y)
+    combine:add(nn.CAddTable())
+    combine:add(nn.Replicate(inSeqLen, 1))
+    combine:add(make2d)
 
-local transfer = nn.Transfer()
+    local y, s_tm1 = nn.LookupTable(nIndex, hiddenSize)(), nn.Identity()() -- both batchSize, hiddenSize
+    local h, y_s   = make2d(), combine{ y, s_tm1 } -- both inSeqLen * batchSize, hiddenSize
+    local attention = nn.Replicate(hiddenSize, 2) -- broadcast
+                                  (nn.CosineDistance(){ h, y_s }) -- inSeqLen * batchSize, hiddenSize
 
--- build simple recurrent neural network
-local r_train = nn.Recurrent(
-    nn.Identity(), -- start
-    nn.Identity(), -- input
-    nn.Identity(), -- feedback
-    transfer,
-    seqLen,        -- rho
-    nn.CAddTable() -- merge TODO
-)
+    -- apply attention and pass through deep GRU
+    local process = nn.Sequential()
+    -- dot produce
+    process:add(nn.CMulTable())
+    process:add(nn.Reshape(inSeqLen, batchSize, hiddenSize, false))
+    process:add(nn.Sum(1))
+    -- deep GRU
+    for _ = 1, depth do
+        process:add(nn.GRU(hiddenSize, hiddenSize))
+    end
 
-local r_test = r_train:clone()
-r_test.feedbackModule = feedback -- TODO
-r_test.mergeModule = nn.SelectTable(2) -- TODO
-r_test:buildRecurrentModule()
+    local s = process{ h, attention }
+    local yPred = nn.Linear(hiddenSize, nClasses)(s) -- distribution of predictions
+    local transfer = nn.gModule({ h, y, s_tm1 },
+        { s, yPred }) -- batchSize, hiddenSize
+
+    --- build Recurrent layer, the main workhorse of the decoder
+    local rTrain = nn.Recurrent(
+        start, -- start
+        nn.Identity(), -- input    {h, y} -> {h, y}
+        nn.Identity(), -- feedback {s, y_pred} -> {s, y_pred}
+        transfer,      --          {h, y, s} -> {s, y_pred}
+        outSeqLen,     -- rho
+        merge          --          {{h, y}, {s, y_pred}} -> {h, y, s}
+    )
+
+    --- build merge for r_test: {{h, y}, {s, y_pred}} -> {h, y, s}
+    local h, table = nn.SelectTable(1)(), nn.Identity()()
+    local s = nn.SelectTable(1)(table)
+    local y_pred = nn.SelectTable(2)(table)
+    local y = nn.ArgMax(2, 2)(y_pred)
+    local testMerge = nn.gModule({ h, table }, { h, y, s })
+
+    local seqModule = nn.Sequential()
+    seqModule:add(rTrain)
+    seqModule:add(nn.SelectTable(2))
+
+    --- build rTest from rTrain
+    local rTest = rTrain:sharedClone()
+    rTest.mergeModule = testMerge
+    rTest:buildRecurrentModule()
+    -- TODO sharing. ensure that rTest's parameters come from rTrain
+
+    if not train then
+        seqModule.modules[1] = rTest
+    end
+    return nn.Sequencer(seqModule, inSeqLen)
+end
+return decoder
+
+--local trainModel = nn.Sequential()
+--local deepGRU = nn.Sequential()
+--local encoder = nn.ParallelTable()
+--encoder:add(deepGRU)
+--encoder:add(nn.Identity())
+--
+--deepGRU:add(nn.LookupTable(nIndex, hiddenSize))
+--for _ = 1, depth do
+--    deepGRU:add(nn.SeqGRU(hiddenSize, hiddenSize))
+--end
+--
+--local zipRepeating = nn.ConcatTable()
+--for i = 1, outSeqLen do
+--    local parallel = nn.ParallelTable()
+--    parallel:add(nn.Identity()) -- repeating
+--    parallel:add(nn.Select(1, i)) -- nonrepeating
+--    zipRepeating:add(parallel)
+--end
+--
+--trainModel:add(encoder)
+--trainModel:add(zipRepeating)
+--trainModel:add(decoder)
+--
+----- build testModel from trainModel
+--local rTest = rTrain:sharedClone()
+--rTest.mergeModule = testMerge
+--rTest:buildRecurrentModule()
+---- TODO sharing. ensure that rTest's parameters come from rTrain
+--
+--local testModel = trainModel:sharedClone()
+--testModel.modules[3] -- decoder
+--         .module     -- seqModule
+--         .modules[1] = rTest
+--
+--local x = torch.range(1, inSeqLen * batchSize)
+--:resize(inSeqLen, batchSize)
+--local s = torch.range(1, batchSize * hiddenSize)
+--:resize(batchSize, hiddenSize) + 1
+--local y = torch.range(1, outSeqLen * batchSize)
+--:resize(outSeqLen, batchSize) + 3
+--
+--local out = trainModel:forward{ x, y }
+--trainModel:backward({ x, y }, out)
+--local out = testModel:forward{ x, y }
+--testModel:backward({ x, y }, out)
 
 
-local decode_train = nn.Sequencer(r_train, seqLen)
-local decode_test = nn.Sequencer(r_test, seqLen)
-
-local h = torch.range(1, seqLen * batchSize * hiddenSize)
-:resize(inSeqLen, batchSize, hiddenSize)
-local s = torch.range(1, batchSize * hiddenSize)
-:resize(batchSize, hiddenSize) + 1
-local y = torch.DoubleTensor(seqLen, batchSize, hiddenSize):fill(1)
---test_input = torch.ones(batchSize, hiddenSize)
-local ziprepeating = ZipRepeating(seqLen)
-local input = ziprepeating:forward{h, y }
-
-local rnn_forward = decode_test:forward(input)
---print(rnn_forward)
-local rnn_forward = decode_train:forward(input)
---print(rnn_forward)
---decode_train:backward(y, rnn_forward)
+--[[
+ TODO:
+ batching
+ optimizers
+ data
+ ]]--

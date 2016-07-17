@@ -9,53 +9,43 @@ require 'rnn'
 require 'nngraph'
 
 -- hyper-parameters
-batchSize = 3
-inSeqLen =4 -- sequence length
-hiddenSize = 2
-depth = 1
+local batchSize = 2
+local inSeqLen = 3 -- sequence length
+local outSeqLen = 5 -- sequence length
+local hiddenSize = 4
+local depth = 1
+local nIndex = 100
+local nClasses = 7
 
-local Transfer, Parent = torch.class('nn.Transfer', 'nn.Module')
+local make2d  = nn.Reshape(batchSize * inSeqLen, hiddenSize, false)
+local combine = nn.Sequential()
+combine:add(nn.CAddTable())
+combine:add(nn.Replicate(inSeqLen, 1))
+combine:add(make2d)
 
-function Transfer:__init()
-    Parent.__init(self)
-    local make2d     = nn.Reshape(batchSize * inSeqLen, hiddenSize, false)
-    local h, s       = nn.Identity()(), nn.Replicate(inSeqLen, 1)() -- both inSeqLen, batchSize, hiddenSize
-    local h2d, s2d   = make2d(h), make2d(s) -- both inSeqLen * batchSize, hiddenSize
-    local attention  = nn.CosineDistance(){h2d, s2d} -- inSeqLen * batchSize
-    local broadcast  = nn.Replicate(hiddenSize, 2)(attention) -- inSeqLen * batchSize, hiddenSize
-    local hWeighted  = nn.CMulTable(){h2d, broadcast} -- inSeqLen * batchSize, hiddenSize
-    local hOrigShape = nn.Reshape(inSeqLen, batchSize, hiddenSize, false)(hWeighted) -- inSeqLen, batchSize, hiddenSize
-    local gruInput   = nn.Sum(1)(hOrigShape) -- batchSize, hiddenSize
-    local deepGru    = nn.Sequential()
-    for _ = 1, depth do
-        deepGru:add(nn.GRU(hiddenSize, hiddenSize))
-    end
-    self.net = nn.gModule({h, s},
-                          {deepGru(gruInput)}) -- batchSize, hiddenSize
+local y, s      = nn.LookupTable(nIndex, hiddenSize)(), nn.Identity()() -- both batchSize, hiddenSize
+local h, s_     = make2d(), combine{ y, s } -- both inSeqLen * batchSize, hiddenSize
+local attention = nn.Replicate(hiddenSize, 2)(nn.CosineDistance(){ h, s_ }) -- inSeqLen * batchSize, hiddenSize
+
+local process = nn.Sequential()
+-- dot product
+process:add(nn.CMulTable())
+process:add(nn.Reshape(inSeqLen, batchSize, hiddenSize, false))
+process:add(nn.Sum(1))
+--deep GRU
+for _ = 1, depth do
+    process:add(nn.GRU(hiddenSize, hiddenSize))
 end
 
-function Transfer:updateOutput(input)
-    assert(_G.memory, "memory is nil")
-    self.output = self.net:updateOutput{_G.memory, input}
-    return self.output
-end
+local gruOutput = process{ h, attention }
+local y_pred = nn.Linear(hiddenSize, nClasses)(gruOutput)
+local transfer = nn.gModule({ h, y, s },
+    { gruOutput, y_pred }) -- batchSize, hiddenSize
 
-function Transfer:updateGradInput(input, gradOutput)
-    assert(_G.memory, "memory is nil")
-    self.gradInput = self.net:updateGradInput({_G.memory, input}, gradOutput)
-    return self.gradInput
-end
-
-function Transfer:accGradParameters(input, gradOutput)
-    assert(_G.memory, "memory is nil")
-    self.net:accGradParameters({_G.memory, input}, gradOutput)
-end
-
---local h = torch.range(1, inSeqLen * batchSize * hiddenSize)
---:resize(inSeqLen, batchSize, hiddenSize)
---local s = torch.range(1, batchSize * hiddenSize)
---:resize(batchSize, hiddenSize) + 1
---local net = nn.Transfer()
---local out = net:forward(s)
---print(out)
---print(net:backward(s, out)[2])
+local h = torch.range(1, inSeqLen * batchSize * hiddenSize)
+:resize(inSeqLen, batchSize, hiddenSize)
+local y = torch.range(1, batchSize)
+local s = torch.range(1, batchSize * hiddenSize)
+:resize(batchSize, hiddenSize) + 1
+local out = transfer:forward{h, y, s }
+--out:backward(s, out)

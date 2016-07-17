@@ -7,22 +7,56 @@
 --
 require 'torch'
 require 'rnn'
+local decoderSelector = require 'decoder'
 
-local batch_size = 2
-local seq_len_in = 3
-local seq_len_out = 4
-local embed_dim = 5
-local output_dim = 6
-local num_layers = 2
+-- hyper-parameters
+local batchSize = 3
+local outSeqLen = 5 -- sequence length
+local inSeqLen = 4
+local hiddenSize = 2
+local nIndex = 1000
+local nClasses = 6
+local depth = 3
 
-local x = torch.ones(seq_len_in, batch_size, embed_dim)
-print(x)
-local y = torch.ones(seq_len_out, batch_size, output_dim)
-local enc = nn.Sequential()
-for _ = 1, num_layers - 1 do
-    enc:add(nn.SeqGRU(embed_dim, embed_dim))
+local trainModel = nn.Sequential()
+local deepGRU = nn.Sequential()
+local encoder = nn.ParallelTable()
+encoder:add(deepGRU)
+encoder:add(nn.Identity())
+
+deepGRU:add(nn.LookupTable(nIndex, hiddenSize))
+for _ = 1, depth do
+    deepGRU:add(nn.SeqGRU(hiddenSize, hiddenSize))
 end
-enc:add(nn.SeqGRU(embed_dim, output_dim))
 
-local h = enc:forward(x) -- seq_len_in, batch_size, output_dim
-print(h)
+local zipRepeating = nn.ConcatTable()
+for i = 1, outSeqLen do
+    local parallel = nn.ParallelTable()
+    parallel:add(nn.Identity()) -- repeating
+    parallel:add(nn.Select(1, i)) -- nonrepeating
+    zipRepeating:add(parallel)
+end
+
+local decoder = decoderSelector(true, inSeqLen, outSeqLen)
+
+trainModel:add(encoder)
+trainModel:add(zipRepeating)
+trainModel:add(decoder)
+
+local testModel = trainModel:sharedClone()
+testModel.modules[3] -- decoder
+.module     -- seqModule
+.modules[1] = rTest
+
+local x = torch.range(1, inSeqLen * batchSize)
+:resize(inSeqLen, batchSize)
+local s = torch.range(1, batchSize * hiddenSize)
+:resize(batchSize, hiddenSize) + 1
+local y = torch.range(1, outSeqLen * batchSize)
+:resize(outSeqLen, batchSize) + 3
+
+local out = trainModel:forward{ x, y }
+trainModel:backward({ x, y }, out)
+local out = testModel:forward{ x, y }
+testModel:backward({ x, y }, out)
+
