@@ -38,15 +38,12 @@ for i = 1, outSeqLen do
 end
 
 local decoder = decoderSelector(true, inSeqLen, outSeqLen)
-
 trainModel:add(encoder)
 trainModel:add(zipRepeating)
 trainModel:add(decoder)
 
 local testModel = trainModel:sharedClone()
-testModel.modules[3] -- decoder
-.module     -- seqModule
-.modules[1] = rTest
+testModel.modules[3] = decoderSelector(false, inSeqLen, outSeqLen)
 
 local x = torch.range(1, inSeqLen * batchSize)
 :resize(inSeqLen, batchSize)

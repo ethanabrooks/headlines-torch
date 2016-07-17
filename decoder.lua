@@ -13,7 +13,7 @@ function decoder(train, inSeqLen, outSeqLen)
 
     --- build start: {h, y} -> {h, y, s}
     local h, y = nn.Identity()(), nn.Identity()()
-    local start = nn.gModule({h, y}, {h, y, nn.Select(1, inSeqLen)(h)})
+    local start = nn.gModule({ h, y }, { h, y, nn.Select(1, inSeqLen)(h) })
 
     --- build merge for r_train: {{h, y}, {s, y_pred}} -> {h, y, s}
     local table, s = nn.Identity()(), nn.SelectTable(1)()
@@ -79,60 +79,7 @@ function decoder(train, inSeqLen, outSeqLen)
     if not train then
         seqModule.modules[1] = rTest
     end
+
     return nn.Sequencer(seqModule, inSeqLen)
 end
 return decoder
-
---local trainModel = nn.Sequential()
---local deepGRU = nn.Sequential()
---local encoder = nn.ParallelTable()
---encoder:add(deepGRU)
---encoder:add(nn.Identity())
---
---deepGRU:add(nn.LookupTable(nIndex, hiddenSize))
---for _ = 1, depth do
---    deepGRU:add(nn.SeqGRU(hiddenSize, hiddenSize))
---end
---
---local zipRepeating = nn.ConcatTable()
---for i = 1, outSeqLen do
---    local parallel = nn.ParallelTable()
---    parallel:add(nn.Identity()) -- repeating
---    parallel:add(nn.Select(1, i)) -- nonrepeating
---    zipRepeating:add(parallel)
---end
---
---trainModel:add(encoder)
---trainModel:add(zipRepeating)
---trainModel:add(decoder)
---
------ build testModel from trainModel
---local rTest = rTrain:sharedClone()
---rTest.mergeModule = testMerge
---rTest:buildRecurrentModule()
----- TODO sharing. ensure that rTest's parameters come from rTrain
---
---local testModel = trainModel:sharedClone()
---testModel.modules[3] -- decoder
---         .module     -- seqModule
---         .modules[1] = rTest
---
---local x = torch.range(1, inSeqLen * batchSize)
---:resize(inSeqLen, batchSize)
---local s = torch.range(1, batchSize * hiddenSize)
---:resize(batchSize, hiddenSize) + 1
---local y = torch.range(1, outSeqLen * batchSize)
---:resize(outSeqLen, batchSize) + 3
---
---local out = trainModel:forward{ x, y }
---trainModel:backward({ x, y }, out)
---local out = testModel:forward{ x, y }
---testModel:backward({ x, y }, out)
-
-
---[[
- TODO:
- batching
- optimizers
- data
- ]]--
