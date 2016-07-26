@@ -39,13 +39,14 @@ function Seq2Seq:__init(cuda, train, batchSize, hiddenSize, vocSize, depth, nCla
     --- build encoder
     local encoder = nn.ParallelTable()
     local encGRU  = nn.Sequential()
+    encGRU:add(nn.Transpose{1, 2}) -- [hiddenSize, batchSize]
     encGRU:add(nn.LookupTable(vocSize, hiddenSize)) -- embed x
     for _ = 1, depth do
         encGRU:add(nn.SeqGRU(hiddenSize, hiddenSize))
         decGRU:add(nn.GRU(hiddenSize, hiddenSize))
     end
     encoder:add(encGRU)
-    encoder:add(nn.Identity()) -- pass along y
+    encoder:add(nn.Transpose{1, 2}) -- pass along y, but fix axes
 
     self.model:add(encoder)
     self.model:add(nn.Identity()) -- decoder placeholder
@@ -56,7 +57,7 @@ end
 
 function Seq2Seq:updateOutput(input)
     local x, y = unpack(input)
-    local inSeqLen, outSeqLen = x:size(1), y:size(1)
+    local inSeqLen, outSeqLen = x:size(2), y:size(2)
     local key = { inSeqLen, outSeqLen, self.train }
     if not self.decoders[key] then
 
@@ -68,7 +69,7 @@ function Seq2Seq:updateOutput(input)
 
         -- memoize new decoder
         self.decoders[key] = require('decoder')(
-            self.train, self.batchSize, self.hiddenSize,
+            self.train, self.hiddenSize,
             inSeqLen, outSeqLen, weightedModules
         ) -- function creates a new decoder layer
         if self.cuda then
@@ -95,20 +96,21 @@ end
 
 function test()
     local x = torch.range(1, inSeqLen * batchSize)
-    :resize(inSeqLen, batchSize)
+    :resize(batchSize, inSeqLen)
     local y1 = torch.range(1, outSeqLen * batchSize)
-    :resize(outSeqLen, batchSize) + 3
+    :resize(batchSize, outSeqLen) + 3
     local y2 = torch.range(1, outSeqLen * batchSize)
-    :resize(outSeqLen + 3, batchSize) + 3
+    :resize(batchSize, outSeqLen + 3) + 3
 
     local trainModel = nn.Seq2Seq(false, true, batchSize, hiddenSize, vocSize, depth, nClasses)
     local testModel = trainModel:sharedClone()
     testModel.train = false
     local out = trainModel:forward{ x, y1 }
-    local out = trainModel:forward{ x, y2 }
     local criterion = nn.SequencerCriterion(nn.CrossEntropyCriterion())
-    print(criterion:forward(out[1], torch.ones(batchSize)))
-    local gradOutput = trainModel:backward({ x, y2 }, out)
+    local tgts = torch.ones(batchSize, outSeqLen):split(1, 2)
+    print(criterion:forward(out, tgts))
+    local out = trainModel:forward{ x, y2 }
+    local gradOutput = trainModel:backward({ x, y1 }, out)
     print(out[1])
     trainModel.model:updateParameters(1)
     local out = trainModel:forward{ x, y1 }

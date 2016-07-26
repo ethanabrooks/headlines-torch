@@ -50,15 +50,16 @@ cmd:option('--id', '', 'id string of this experiment (used to name output file) 
 cmd:text()
 local opt = cmd:parse(arg or {})
 
-local vocSize = 20000 -- TODO
+local vocSize = 10000 -- TODO
 
 local logger = optim.Logger('loss_log.txt')
-model = nn.Seq2Seq(false, true, opt.batchSize, opt.hiddenSize, vocSize, opt.depth, vocSize)
-criterion = nn.SequencerCriterion(nn.CrossEntropyCriterion()) -- todo make this compatible with model
-x, dl_dx = model:getParameters()
+local model = nn.Seq2Seq(opt.cuda, true, opt.batchSize, opt.hiddenSize, vocSize, opt.depth, vocSize)
+local criterion = nn.SequencerCriterion(nn.CrossEntropyCriterion()) -- todo make this compatible with model
+local x, dl_dx = model:getParameters()
+local inputs, target
 
 -- TODO: make these for adagrad
-optim_params = {
+local optim_params = {
     learningRate = 1e-3,
     learningRateDecay = 1e-4,
     weightDecay = 0,
@@ -75,31 +76,38 @@ local feval = function(x_new)
     dl_dx:zero()
 
     -- evaluate the loss function and its derivative wrt x, for that sample
-    local loss_x = criterion:forward(model:forward(inputs), target)
-    model:backward(inputs, criterion:backward(output, target))
+    local target_table = target:split(1, 2)
+    local outputs = model:forward(inputs)
+    local loss_x = criterion:forward(outputs, target_table)
+    model:backward(inputs, criterion:backward(outputs, target_table))
 
     -- return loss(x) and d/dx(loss)
     return loss_x, dl_dx
 end
 
 -- run
-for _ = 1, opt.maxepoch do
-    local current_loss = 0
+for epoch = 1, opt.maxepoch do
+    local loss = 0
+    local instances_processed = 0
     for _, set in pairs({'train', 'test'}) do
         for batchDir in paths.iterdirs(set) do
             local batchPath = paths.concat(set, batchDir)
 
-            -- TODO: batching
-            inputs = torch.load(paths.concat(batchPath, 'article.dat'))
-            target = torch.load(paths.concat(batchPath, 'title.dat'))
+            -- + 1 b/c lua is 1-indexed
+            inputs = torch.load(paths.concat(batchPath, 'article.dat')) + 1
+            target = torch.load(paths.concat(batchPath, 'title.dat')) + 1
             inputs = {inputs, target}
 
             -- TODO: print stuff
             -- TODO: log stuff
             -- TODO: only make updates ever n intervals
             if set == 'train' then
-                local _, fs = optim.sgd(feval, x, optim_params)
-                current_loss = current_loss + fs[1]
+                if instances_processed % 100 == 1 then
+                    print('epoch', epoch, 'loss', loss)
+                    local _, fs = optim.sgd(feval, x, optim_params)
+                    loss = loss + fs[1]
+                    instances_processed = instances_processed + inputs:size(1)
+                end
             else
                 local pred = model:forward(inputs)
                 -- TODO: evaluate
@@ -107,9 +115,9 @@ for _ = 1, opt.maxepoch do
         end
     end
 
-    print('current loss = ' .. current_loss)
+    print('current loss = ' .. loss)
 
-    logger:add{['training error'] = current_loss}
+    logger:add{['training error'] = loss }
     logger:style{['training error'] = '-'}
 --    logger:plot()
 end

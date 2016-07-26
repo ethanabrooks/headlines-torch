@@ -1,7 +1,7 @@
 require 'rnn'
 require 'nngraph'
 
-function buildDecoder(train, batchSize, hiddenSize, inSeqLen, outSeqLen, weightedModules)
+function buildDecoder(train, hiddenSize, inSeqLen, outSeqLen, weightedModules)
     -- weighted modules
     local embedding, deepGRU, outLayer = unpack(weightedModules)
 
@@ -41,8 +41,8 @@ function buildDecoder(train, batchSize, hiddenSize, inSeqLen, outSeqLen, weighte
     end
 
     --- build transfer: {h, y, s_tm1} -> {s, y_pred}
-    local make2d        = nn.Reshape(inSeqLen * batchSize, hiddenSize, false) -- for weighting across timesteps and batches
-    local restoreShape = nn.Reshape(inSeqLen, batchSize, hiddenSize, false)
+    local make2d        = nn.Reshape(-1, hiddenSize, false) -- for weighting across timesteps and batches
+    local restoreShape = nn.Reshape(inSeqLen, -1, hiddenSize, false)
 
     local combine = nn.Sequential()        -- combines s_tm1 with embed(y)
     combine:add(nn.CAddTable())            -- combine though addition
