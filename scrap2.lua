@@ -14,18 +14,12 @@ local hiddenSize = 2
 local nIndex = 100
 local lr = 0.1
 local x = torch.DoubleTensor(seqLen, batchSize, hiddenSize):fill(1)
-print(x)
 
-local feedback = nn.Sequential()
-local parallel = nn.ConcatTable()
-local embedMax = nn.Sequential()
-feedback:add(parallel)
-parallel:add(nn.Identity)
---parallel:add(embedMax)
-parallel:add(nn.Identity)
-print(parallel)
-embedMax:add(nn.Max(3))
-embedMax:add(nn.LookupTable(nIndex, hiddenSize))
-feedback:add(nn.CAddTable())
+function f(fname)
+    fname:find(5)
+end
 
-print(feedback:forward(x))
+local string = "abc.csv"
+for f in paths.files('train', "5") do
+    print(f)
+    end
