@@ -1,9 +1,5 @@
 require 'nn'
 
-cmd = torch.CmdLine()
-cmd:text()
-cmd:text('Train Seq2Seq on headlines')
-cmd:text('Options:')
 -- training
 --cmd:option('--startlr', 0.05, 'learning rate at t=0')
 --cmd:option('--minlr', 0.00001, 'minimum learning rate')
@@ -13,29 +9,49 @@ cmd:text('Options:')
 --cmd:option('--maxnormout', -1, 'max l2-norm of each layer\'s output neuron weights')
 --cmd:option('--cutoff', -1, 'max l2-norm of concatenation of all gradParam tensors')
 
+require 'cutorch'
+require 'cunn'
+require 'optim'
+require 'model'
+local depth = 1
+local vocSize = 10
+local hiddenSize = 3
+local nClasses = 3
 
-cmd:option('--batchSize', 32, 'number of examples per batch')
-cmd:option('--cuda', true, 'use CUDA')
-cmd:option('--device', 1, 'sets the device (GPU) to use')
-cmd:option('--maxepoch', 1000, 'maximum number of epochs to run')
-cmd:option('--earlystop', 50, 'maximum number of epochs to wait to find a better local minima for early-stopping')
-cmd:option('--progress', false, 'print progress bar')
-cmd:option('--silent', false, 'don\'t print anything to stdout')
-cmd:option('--uniform', 0.1, 'initialize parameters using uniform distribution between -uniform and uniform. -1 means default initialization')
--- rnn layer
-cmd:option('--lstm', false, 'use Long Short Term Memory (nn.LSTM instead of nn.Recurrent)')
-cmd:option('--bn', false, 'use batch normalization. Only supported with --lstm')
-cmd:option('--gru', false, 'use Gated Recurrent Units (nn.GRU instead of nn.Recurrent)')
-cmd:option('--seqlen', 5, 'sequence length : back-propagate through time (BPTT) for this many time-steps')
-cmd:option('--inputsize', -1, 'size of lookup table embeddings. -1 defaults to hiddensize[1]')
-cmd:option('--hiddenSize', '{200}', 'number of hidden units used at output of each recurrent layer. When more than one is specified, RNN/LSTMs/GRUs are stacked')
-cmd:option('--dropout', 0, 'apply dropout with this probability after each rnn layer. dropout <= 0 disables it.')
--- data
-cmd:option('--batchSize', 32, 'number of examples per batch')
-cmd:option('--trainsize', -1, 'number of train examples seen between each epoch')
-cmd:option('--validsize', -1, 'number of valid examples used for early stopping and cross-validation')
-cmd:option('--savepath', paths.concat('main', 'rnnlm'), 'path to directory where experiment log (includes model) will be saved')
-cmd:option('--id', '', 'id string of this experiment (used to name output file) (defaults to a unique id)')
+--local Test, Parent = torch.class('nn.Test', 'nn.Module')
+--
+--function Test:__init()
+----    self.model = nn.Linear(2, 3):cuda()
+--    self.model     = nn.Sequential()
+--    local decGRU   = nn.Sequential()
+--    self.yLookup   = nn.LookupTable(vocSize, hiddenSize):cuda() -- embed y
+--    self.decGRU    = decGRU:cuda()                              -- populated in next paragraph
+--    self.out_layer = nn.Linear(hiddenSize, nClasses):cuda()     -- map hidden state to class preds
+--
+----    local decWeightedModules = {self.yLookup, self.decGRU, self.out_layer}
+--
+----    for i, module in ipairs(decWeightedModules) do
+----        decWeightedModules[i] = module:cuda()
+----    end
+--
+--    --- build encoder
+--    local encoder = nn.ParallelTable()
+--    local encGRU  = nn.Sequential()
+--    encGRU:add(nn.Transpose{1, 2}) -- [hiddenSize, batchSize]
+--    encGRU:add(nn.LookupTable(vocSize, hiddenSize)) -- embed x
+--    for _ = 1, depth do
+--        encGRU:add(nn.SeqGRU(hiddenSize, hiddenSize))
+----        decGRU:add(nn.GRU(hiddenSize, hiddenSize))
+--    end
+--    encoder:add(encGRU)
+--    encoder:add(nn.Transpose{1, 2}) -- pass along y, but fix axes
+--
+--    self.model:add(encoder)
+--    self.model:add(nn.Identity()) -- decoder placeholder
+--    self.model:cuda()
+--end
+----local model = nn.Seq2Seq(true, true, 4, 10, 1, 100)
+local model = nn.Seq2Seq(true, true, 2, 2, 2, 2)
+print(model:getParameters())
 
-cmd:text()
 

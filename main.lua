@@ -7,6 +7,10 @@
 require 'nn'
 require 'optim'
 require 'model'
+require 'rnn'
+require 'cutorch'
+require 'cunn'
+cutorch.setDevice(3)
 
 --[[ command line arguments ]]--
 cmd = torch.CmdLine()
@@ -23,10 +27,8 @@ cmd:text('Options:')
 --cmd:option('--cutoff', -1, 'max l2-norm of concatenation of all gradParam tensors')
 
 
-cmd:option('--batchSize', 32, 'number of examples per batch')
-cmd:option('--cuda', true, 'use CUDA')
 cmd:option('--device', 1, 'sets the device (GPU) to use')
-cmd:option('--maxepoch', 1000, 'maximum number of epochs to run')
+cmd:option('--maxepoch', 200, 'maximum number of epochs to run')
 cmd:option('--earlystop', 50, 'maximum number of epochs to wait to find a better local minima for early-stopping')
 cmd:option('--progress', false, 'print progress bar')
 cmd:option('--silent', false, 'don\'t print anything to stdout')
@@ -41,7 +43,7 @@ cmd:option('--inputsize', -1, 'size of lookup table embeddings. -1 defaults to h
 cmd:option('--hiddenSize', 200, 'number of hidden units used at output of each recurrent layer. When more than one is specified, RNN/LSTMs/GRUs are stacked')
 cmd:option('--dropout', 0, 'apply dropout with this probability after each rnn layer. dropout <= 0 disables it.')
 -- data
-cmd:option('--batchSize', 32, 'number of examples per batch')
+cmd:option('--batchSize', 200, 'number of examples per batch')
 cmd:option('--trainsize', -1, 'number of train examples seen between each epoch')
 cmd:option('--validsize', -1, 'number of valid examples used for early stopping and cross-validation')
 cmd:option('--savepath', paths.concat('main', 'rnnlm'), 'path to directory where experiment log (includes model) will be saved')
@@ -50,12 +52,13 @@ cmd:option('--id', '', 'id string of this experiment (used to name output file) 
 cmd:text()
 local opt = cmd:parse(arg or {})
 
-local vocSize = 10000 -- TODO
+torch.setheaptracking(true)
+local vocSize = 11000 -- TODO
 
 local logger = optim.Logger('loss_log.txt')
-local model = nn.Seq2Seq(opt.cuda, true, opt.batchSize, opt.hiddenSize, vocSize, opt.depth, vocSize)
-local criterion = nn.SequencerCriterion(nn.CrossEntropyCriterion()) -- todo make this compatible with model
-local x, dl_dx = model:getParameters()
+local model = nn.Seq2Seq(true, true, opt.hiddenSize, vocSize, opt.depth, vocSize)
+local criterion = nn.SequencerCriterion(nn.CrossEntropyCriterion()):cuda() -- todo make this compatible with model
+local params, gradParams = model:getParameters()
 local inputs, target
 
 -- TODO: make these for adagrad
@@ -66,14 +69,14 @@ local optim_params = {
     momentum = 0
 }
 
-local feval = function(x_new)
-    if x ~= x_new then
-        x:copy(x_new)
+feval = function(x_new)
+    if params ~= x_new then
+        params:copy(x_new)
     end
 
     -- reset gradients
     -- (gradients are always accumulated, to accommodate batch methods)
-    dl_dx:zero()
+    gradParams:zero()
 
     -- evaluate the loss function and its derivative wrt x, for that sample
     local target_table = target:split(1, 2)
@@ -82,40 +85,53 @@ local feval = function(x_new)
     model:backward(inputs, criterion:backward(outputs, target_table))
 
     -- return loss(x) and d/dx(loss)
-    return loss_x, dl_dx
+    return loss_x, gradParams
 end
 
 -- run
 for epoch = 1, opt.maxepoch do
+    print('epoch', epoch)
     local loss = 0
     local instances_processed = 0
     for _, set in pairs({'train', 'test'}) do
         for batchDir in paths.iterdirs(set) do
+            print(batchDir)
             local batchPath = paths.concat(set, batchDir)
 
             -- + 1 b/c lua is 1-indexed
-            inputs = torch.load(paths.concat(batchPath, 'article.dat')) + 1
-            target = torch.load(paths.concat(batchPath, 'title.dat')) + 1
-            inputs = {inputs, target}
+            local bucket_inputs = torch.load(paths.concat(batchPath, 'article.dat')) + 1
+            local bucket_target = torch.load(paths.concat(batchPath, 'title.dat')) + 1
 
-            -- TODO: print stuff
-            -- TODO: log stuff
-            -- TODO: only make updates ever n intervals
-            if set == 'train' then
-                if instances_processed % 100 == 1 then
-                    print('epoch', epoch, 'loss', loss)
-                    local _, fs = optim.sgd(feval, x, optim_params)
-                    loss = loss + fs[1]
-                    instances_processed = instances_processed + inputs:size(1)
+            assert(bucket_inputs:size(1) == bucket_target:size(1))
+            local num_batches = math.ceil(bucket_inputs:size(1) / opt.batchSize)
+            for i = 1, num_batches do
+
+                -- split bucket into batches
+                local batch_start = (i - 1) * opt.batchSize + 1
+                local batch_end = math.min(i * opt.batchSize + 1, bucket_inputs:size(1))
+                inputs = bucket_inputs[{{batch_start, batch_end}}]:cuda()
+                target = bucket_target[{{batch_start, batch_end}}]:cuda()
+                inputs = {inputs, target}
+
+                -- TODO: print stuff
+                -- TODO: log stuff
+                -- TODO: only make updates ever n intervals
+                if set == 'train' then
+--                    if instances_processed % 1 == 1 then
+                        local _, fs = optim.sgd(feval, params, optim_params)
+                        loss = loss + fs[1]
+                        instances_processed = instances_processed + target:size(1)
+                        print('loss', loss/instances_processed)
+--                    end
+                else
+                    local pred = model:forward(inputs)
+                    -- TODO: evaluate
                 end
-            else
-                local pred = model:forward(inputs)
-                -- TODO: evaluate
+                collectgarbage()
             end
         end
     end
-
-    print('current loss = ' .. loss)
+    exit()
 
     logger:add{['training error'] = loss }
     logger:style{['training error'] = '-'}

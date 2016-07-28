@@ -5,7 +5,6 @@
 -- Time: 11:41 AM
 -- To change this template use File | Settings | File Templates.
 --
-require 'torch'
 require 'rnn'
 
 -- hyper-parameters
@@ -20,21 +19,20 @@ local depth = 3
 
 local Seq2Seq, Parent = torch.class('nn.Seq2Seq', 'nn.Module')
 
-function Seq2Seq:__init(cuda, train, batchSize, hiddenSize, vocSize, depth, nClasses)
+function Seq2Seq:__init(cuda, train, hiddenSize, vocSize, depth, nClasses)
 
-    self.cuda = cuda
+    function self.maybeCuda(module)
+        if cuda then
+            return module:cuda()
+        else
+            return module
+        end
+    end
+
     self.train = train
-    self.batchSize = batchSize
     self.hiddenSize = hiddenSize
-    self.model = nn.Sequential()
-
-    --- build weighted layers of decoder
+    local model  = nn.Sequential()
     local decGRU = nn.Sequential()
-    self.decWeightedModules = {
-        nn.LookupTable(vocSize, hiddenSize), -- embed y
-        decGRU,                              -- populated in next paragraph
-        nn.Linear(hiddenSize, nClasses),     -- map hidden state to class preds
-    }
 
     --- build encoder
     local encoder = nn.ParallelTable()
@@ -48,9 +46,14 @@ function Seq2Seq:__init(cuda, train, batchSize, hiddenSize, vocSize, depth, nCla
     encoder:add(encGRU)
     encoder:add(nn.Transpose{1, 2}) -- pass along y, but fix axes
 
-    self.model:add(encoder)
-    self.model:add(nn.Identity()) -- decoder placeholder
-    if cuda then self.model:cuda() end
+    --- build weighted layers of decoder
+    self.yLookup  = self.maybeCuda(nn.LookupTable(vocSize, hiddenSize)) -- embed y
+    self.decGRU   = self.maybeCuda(decGRU)                              -- populated in next paragraph
+    self.outLayer = self.maybeCuda(nn.Linear(hiddenSize, nClasses))     -- map hidden state to class preds
+
+    model:add(encoder)
+    model:add(nn.Identity()) -- decoder placeholder
+    self.model = self.maybeCuda(model)
     self.decoders = {} -- memoize decoders
     Parent.__init(self)
 end
@@ -62,9 +65,9 @@ function Seq2Seq:updateOutput(input)
     if not self.decoders[key] then
 
         -- clone weighted modules
-        local weightedModules = {}
-        for i = 1, #self.decWeightedModules do
-            weightedModules[i] = self.decWeightedModules[i]:sharedClone()
+        local weightedModules = {self.yLookup, self.decGRU, self.outLayer}
+        for i = 1, #weightedModules do
+            weightedModules[i] = weightedModules[i]:sharedClone()
         end
 
         -- memoize new decoder
@@ -72,11 +75,8 @@ function Seq2Seq:updateOutput(input)
             self.train, self.hiddenSize,
             inSeqLen, outSeqLen, weightedModules
         ) -- function creates a new decoder layer
-        if self.cuda then
-            self.decoders[key]:cuda()
-        end
     end
-    self.model.modules[2] = self.decoders[key]
+    self.model.modules[2] = self.maybeCuda(self.decoders[key])
     self.output = self.model:forward(input)
     return self.output
 end

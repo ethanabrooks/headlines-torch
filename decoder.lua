@@ -41,7 +41,7 @@ function buildDecoder(train, hiddenSize, inSeqLen, outSeqLen, weightedModules)
     end
 
     --- build transfer: {h, y, s_tm1} -> {s, y_pred}
-    local make2d        = nn.Reshape(-1, hiddenSize, false) -- for weighting across timesteps and batches
+    local make2d       = nn.Reshape(-1, hiddenSize, false) -- for weighting across timesteps and batches
     local restoreShape = nn.Reshape(inSeqLen, -1, hiddenSize, false)
 
     local combine = nn.Sequential()        -- combines s_tm1 with embed(y)
