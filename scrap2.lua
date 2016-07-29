@@ -15,11 +15,6 @@ local nIndex = 100
 local lr = 0.1
 local x = torch.DoubleTensor(seqLen, batchSize, hiddenSize):fill(1)
 
-function f(fname)
-    fname:find(5)
-end
 
-local string = "abc.csv"
-for f in paths.files('train', "5") do
-    print(f)
-    end
+print(torch.Tensor({1}) == torch.Tensor({1}))
+

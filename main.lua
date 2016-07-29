@@ -43,7 +43,7 @@ cmd:option('--inputsize', -1, 'size of lookup table embeddings. -1 defaults to h
 cmd:option('--hiddenSize', 200, 'number of hidden units used at output of each recurrent layer. When more than one is specified, RNN/LSTMs/GRUs are stacked')
 cmd:option('--dropout', 0, 'apply dropout with this probability after each rnn layer. dropout <= 0 disables it.')
 -- data
-cmd:option('--batchSize', 200, 'number of examples per batch')
+cmd:option('--batchSize', 1024, 'number of examples per batch')
 cmd:option('--trainsize', -1, 'number of train examples seen between each epoch')
 cmd:option('--validsize', -1, 'number of valid examples used for early stopping and cross-validation')
 cmd:option('--savepath', paths.concat('main', 'rnnlm'), 'path to directory where experiment log (includes model) will be saved')
@@ -117,12 +117,12 @@ for epoch = 1, opt.maxepoch do
                 -- TODO: log stuff
                 -- TODO: only make updates ever n intervals
                 if set == 'train' then
---                    if instances_processed % 1 == 1 then
+                    if instances_processed % 1 == 1 then
                         local _, fs = optim.sgd(feval, params, optim_params)
                         loss = loss + fs[1]
                         instances_processed = instances_processed + target:size(1)
                         print('loss', loss/instances_processed)
---                    end
+                    end
                 else
                     local pred = model:forward(inputs)
                     -- TODO: evaluate

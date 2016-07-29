@@ -6,15 +6,7 @@
 -- To change this template use File | Settings | File Templates.
 --
 require 'rnn'
-
--- hyper-parameters
-local batchSize = 10
-local outSeqLen = 5 -- sequence length
-local inSeqLen = 4
-local hiddenSize = 2
-local vocSize = 1000
-local nClasses = 6
-local depth = 3
+local buildDecoder = require 'decoder'
 
 
 local Seq2Seq, Parent = torch.class('nn.Seq2Seq', 'nn.Module')
@@ -54,15 +46,15 @@ function Seq2Seq:__init(cuda, train, hiddenSize, vocSize, depth, nClasses)
     model:add(encoder)
     model:add(nn.Identity()) -- decoder placeholder
     self.model = self.maybeCuda(model)
-    self.decoders = {} -- memoize decoders
     Parent.__init(self)
 end
 
 function Seq2Seq:updateOutput(input)
     local x, y = unpack(input)
     local inSeqLen, outSeqLen = x:size(2), y:size(2)
-    local key = { inSeqLen, outSeqLen, self.train }
-    if not self.decoders[key] then
+    if self.inSeqLen ~= inSeqLen or self.outSeqLen ~= outSeqLen then
+        self.inSeqLen, self.outSeqLen = inSeqLen, outSeqLen
+        print('new decoder')
 
         -- clone weighted modules
         local weightedModules = {self.yLookup, self.decGRU, self.outLayer}
@@ -70,15 +62,25 @@ function Seq2Seq:updateOutput(input)
             weightedModules[i] = weightedModules[i]:sharedClone()
         end
 
-        -- memoize new decoder
-        self.decoders[key] = require('decoder')(
-            self.train, self.hiddenSize,
-            inSeqLen, outSeqLen, weightedModules
-        ) -- function creates a new decoder layer
+        -- build decoder
+        self.model.modules[2] = self.maybeCuda(
+            -- function creates a new decoder layer
+            buildDecoder(self.train, self.hiddenSize,
+                         inSeqLen, outSeqLen, weightedModules)
+        )
     end
-    self.model.modules[2] = self.maybeCuda(self.decoders[key])
     self.output = self.model:forward(input)
     return self.output
+end
+
+function Seq2Seq:training()
+    self.inSeqLen, self.outSeqLen = nil, nil
+    Parent.training(self)
+end
+
+function Seq2Seq:evaluate()
+    self.inSeqLen, self.outSeqLen = nil, nil
+    Parent.evaluate(self)
 end
 
 function Seq2Seq:updateGradInput(input, gradOutput)
@@ -95,6 +97,15 @@ function Seq2Seq:updateParameters(lr)
 end
 
 function test()
+    -- hyper-parameters
+    local batchSize = 10
+    local outSeqLen = 5 -- sequence length
+    local inSeqLen = 4
+    local hiddenSize = 2
+    local vocSize = 1000
+    local nClasses = 6
+    local depth = 3
+
     local x = torch.range(1, inSeqLen * batchSize)
     :resize(batchSize, inSeqLen)
     local y1 = torch.range(1, outSeqLen * batchSize)
@@ -102,7 +113,7 @@ function test()
     local y2 = torch.range(1, outSeqLen * batchSize)
     :resize(batchSize, outSeqLen + 3) + 3
 
-    local trainModel = nn.Seq2Seq(false, true, batchSize, hiddenSize, vocSize, depth, nClasses)
+    local trainModel = nn.Seq2Seq(false, true, hiddenSize, vocSize, depth, nClasses)
     local testModel = trainModel:sharedClone()
     testModel.train = false
     local out = trainModel:forward{ x, y1 }
