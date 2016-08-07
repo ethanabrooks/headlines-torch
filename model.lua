@@ -5,8 +5,9 @@
 -- Time: 11:41 AM
 -- To change this template use File | Settings | File Templates.
 --
+
 require 'rnn'
-local buildDecoder = require 'decoder'
+local buildDecoder = require 'decoder-alt'
 
 
 local Seq2Seq, Parent = torch.class('nn.Seq2Seq', 'nn.Module')
@@ -27,24 +28,26 @@ function Seq2Seq:__init(cuda, train, hiddenSize, vocSize, depth, nClasses)
     local decGRU = nn.Sequential()
 
     --- build encoder
-    local encoder = nn.ParallelTable()
     local encGRU  = nn.Sequential()
-    encGRU:add(nn.Transpose{1, 2}) -- [hiddenSize, batchSize]
-    encGRU:add(nn.LookupTable(vocSize, hiddenSize)) -- embed x
-    for _ = 1, depth do
+    :add(nn.Transpose{1, 2}) -- [hiddenSize, batchSize]
+    :add(nn.LookupTable(vocSize, hiddenSize)) -- embed x
+    for i = 1, depth do
         encGRU:add(nn.SeqGRU(hiddenSize, hiddenSize))
-        decGRU:add(nn.GRU(hiddenSize, hiddenSize))
+        local inputSize = i == 1 and hiddenSize * 2 + nClasses or hiddenSize
+        decGRU:add(nn.GRU(inputSize, hiddenSize))
     end
-    encoder:add(encGRU)
-    encoder:add(nn.Transpose{1, 2}) -- pass along y, but fix axes
+    encGRU:add(nn.Transpose{1, 2})
+    local encoder = nn.ParallelTable()
+    :add(encGRU)
+    :add(nn.OneHot(nClasses)) -- pass along y
 
     --- build weighted layers of decoder
-    self.yLookup  = self.maybeCuda(nn.LookupTable(vocSize, hiddenSize)) -- embed y
     self.decGRU   = self.maybeCuda(decGRU)                              -- populated in next paragraph
     self.outLayer = self.maybeCuda(nn.Linear(hiddenSize, nClasses))     -- map hidden state to class preds
+    self.weightedModules = {nn.LookupTable(vocSize, hiddenSize), self.decGRU, self.outLayer}
 
     model:add(encoder)
-    model:add(nn.Identity()) -- decoder placeholder
+    model:add(buildDecoder(train, hiddenSize, 1, 1, self.weightedModules))
     self.model = self.maybeCuda(model)
     Parent.__init(self)
 end
@@ -57,9 +60,9 @@ function Seq2Seq:updateOutput(input)
         print('new decoder')
 
         -- clone weighted modules
-        local weightedModules = {self.yLookup, self.decGRU, self.outLayer}
-        for i = 1, #weightedModules do
-            weightedModules[i] = weightedModules[i]:sharedClone()
+        local weightedModules = {}
+        for i = 1, #self.weightedModules do
+            weightedModules[i] = self.weightedModules[i]:sharedClone()
         end
 
         -- build decoder
@@ -96,14 +99,18 @@ function Seq2Seq:updateParameters(lr)
     self.model:updateParameters(lr)
 end
 
+function Seq2Seq:__tostring__()
+    return self.model:__tostring__()
+end
+
 function test()
     -- hyper-parameters
-    local batchSize = 10
-    local outSeqLen = 5 -- sequence length
-    local inSeqLen = 4
-    local hiddenSize = 2
+    local batchSize = 2
+    local inSeqLen = 3
+    local outSeqLen = 4 -- sequence length
+    local hiddenSize = 5
     local vocSize = 1000
-    local nClasses = 6
+    local nClasses = outSeqLen * batchSize * 2
     local depth = 3
 
     local x = torch.range(1, inSeqLen * batchSize)
@@ -114,19 +121,17 @@ function test()
     :resize(batchSize, outSeqLen + 3) + 3
 
     local trainModel = nn.Seq2Seq(false, true, hiddenSize, vocSize, depth, nClasses)
-    local testModel = trainModel:sharedClone()
-    testModel.train = false
+--    local testModel = trainModel:sharedClone()
+--    testModel.train = false
     local out = trainModel:forward{ x, y1 }
     local criterion = nn.SequencerCriterion(nn.CrossEntropyCriterion())
     local tgts = torch.ones(batchSize, outSeqLen):split(1, 2)
     print(criterion:forward(out, tgts))
-    local out = trainModel:forward{ x, y2 }
-    local gradOutput = trainModel:backward({ x, y1 }, out)
-    print(out[1])
-    trainModel.model:updateParameters(1)
-    local out = trainModel:forward{ x, y1 }
-    local out = testModel:forward{ x, y2 }
-    print(out[1])
-    testModel:backward({ x, y2 }, out)
+--    local out = trainModel:forward{ x, y2 }
+--    local gradOutput = trainModel:backward({ x, y1 }, out)
+--    trainModel.model:updateParameters(1)
+--    local out = trainModel:forward{ x, y1 }
+--    local out = testModel:forward{ x, y2 }
+--    testModel:backward({ x, y2 }, out)
 end
---test()
+test()

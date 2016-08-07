@@ -9,8 +9,8 @@ function buildDecoder(train, hiddenSize, inSeqLen, outSeqLen, weightedModules)
     local zipRepeating = nn.ConcatTable()
     for i = 1, outSeqLen do
         local parallel = nn.ParallelTable()
-        parallel:add(nn.Identity())   -- repeating
-        parallel:add(nn.Select(1, i)) -- nonrepeating
+                         :add(nn.Identity())   -- repeating
+                         :add(nn.Select(1, i)) -- nonrepeating
         zipRepeating:add(parallel)
     end
 
@@ -66,7 +66,8 @@ function buildDecoder(train, hiddenSize, inSeqLen, outSeqLen, weightedModules)
     process:add(restoreShape)   -- inSeqLen, batchSize, hiddenSize
     process:add(nn.Sum(1))      -- batchSize, hiddenSize
 
-    process:add(deepGRU)                            -- batchSize, hiddenSize
+--    process:add(deepGRU)                            -- batchSize, hiddenSize
+    process:add(nn.GRU(hiddenSize, hi))
     local s = process{ h, attention }               -- batchSize, hiddenSize
     local transfer = nn.gModule({ h, y, s_tm1 },    -- sizes specified above
                                 { s,                -- batchSize, hiddenSize,
@@ -87,7 +88,7 @@ function buildDecoder(train, hiddenSize, inSeqLen, outSeqLen, weightedModules)
 
     local decoder = nn.Sequential()
     decoder:add(zipRepeating)
-    decoder:add(nn.Sequencer(module, inSeqLen))
+    decoder:add(nn.Sequencer(module, outSeqLen))
     return decoder
 end
 return buildDecoder

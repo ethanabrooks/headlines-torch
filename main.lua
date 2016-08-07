@@ -8,9 +8,9 @@ require 'nn'
 require 'optim'
 require 'model'
 require 'rnn'
-require 'cutorch'
-require 'cunn'
-cutorch.setDevice(3)
+-- require 'cutorch'
+-- require 'cunn'
+--cutorch.setDevice(3)
 
 --[[ command line arguments ]]--
 cmd = torch.CmdLine()
@@ -43,7 +43,7 @@ cmd:option('--inputsize', -1, 'size of lookup table embeddings. -1 defaults to h
 cmd:option('--hiddenSize', 200, 'number of hidden units used at output of each recurrent layer. When more than one is specified, RNN/LSTMs/GRUs are stacked')
 cmd:option('--dropout', 0, 'apply dropout with this probability after each rnn layer. dropout <= 0 disables it.')
 -- data
-cmd:option('--batchSize', 1024, 'number of examples per batch')
+cmd:option('--batchSize', 5, 'number of examples per batch')
 cmd:option('--trainsize', -1, 'number of train examples seen between each epoch')
 cmd:option('--validsize', -1, 'number of valid examples used for early stopping and cross-validation')
 cmd:option('--savepath', paths.concat('main', 'rnnlm'), 'path to directory where experiment log (includes model) will be saved')
@@ -52,12 +52,14 @@ cmd:option('--id', '', 'id string of this experiment (used to name output file) 
 cmd:text()
 local opt = cmd:parse(arg or {})
 
-torch.setheaptracking(true)
+--torch.setheaptracking(true)
 local vocSize = 11000 -- TODO
 
 local logger = optim.Logger('loss_log.txt')
-local model = nn.Seq2Seq(true, true, opt.hiddenSize, vocSize, opt.depth, vocSize)
-local criterion = nn.SequencerCriterion(nn.CrossEntropyCriterion()):cuda() -- todo make this compatible with model
+print('Build model...')
+local model = nn.Seq2Seq(false, false, opt.hiddenSize, vocSize, opt.depth, vocSize)
+print(model)
+local criterion = nn.SequencerCriterion(nn.CrossEntropyCriterion()) -- :cuda() -- todo make this compatible with model
 local params, gradParams = model:getParameters()
 local inputs, target
 
@@ -84,18 +86,34 @@ feval = function(x_new)
     local loss_x = criterion:forward(outputs, target_table)
     model:backward(inputs, criterion:backward(outputs, target_table))
 
-    -- return loss(x) and d/dx(loss)
+--  return loss(x) and d/dx(loss)
     return loss_x, gradParams
 end
+
+print('Count instances...')
+local train_instances = 0
+for batchDir in paths.iterdirs('train') do
+    local batchPath = paths.concat('train', batchDir)
+    local bucket_inputs = torch.load(paths.concat(batchPath, 'article.dat'))
+    train_instances = train_instances + bucket_inputs:size(1)
+end
+print('Training instances:', train_instances)
+
 
 -- run
 for epoch = 1, opt.maxepoch do
     print('epoch', epoch)
     local loss = 0
     local instances_processed = 0
+    local instances_since_update = 0
     for _, set in pairs({'train', 'test'}) do
+        if set == 'train' then
+            model:training()
+        else
+            model:evaluate()
+        end
         for batchDir in paths.iterdirs(set) do
-            print(batchDir)
+            print('Batch id:', batchDir)
             local batchPath = paths.concat(set, batchDir)
 
             -- + 1 b/c lua is 1-indexed
@@ -109,29 +127,32 @@ for epoch = 1, opt.maxepoch do
                 -- split bucket into batches
                 local batch_start = (i - 1) * opt.batchSize + 1
                 local batch_end = math.min(i * opt.batchSize + 1, bucket_inputs:size(1))
-                inputs = bucket_inputs[{{batch_start, batch_end}}]:cuda()
-                target = bucket_target[{{batch_start, batch_end}}]:cuda()
+                inputs = bucket_inputs[{{batch_start, batch_end}}] -- :cuda()
+                target = bucket_target[{{batch_start, batch_end}}] -- :cuda()
                 inputs = {inputs, target}
 
                 -- TODO: print stuff
                 -- TODO: log stuff
                 -- TODO: only make updates ever n intervals
                 if set == 'train' then
-                    if instances_processed % 1 == 1 then
-                        local _, fs = optim.sgd(feval, params, optim_params)
-                        loss = loss + fs[1]
-                        instances_processed = instances_processed + target:size(1)
+                    local _, fs = optim.sgd(feval, params, optim_params)
+                    loss = loss + fs[1]
+
+                    instances_processed = instances_processed + target:size(1)
+                    instances_since_update = instances_since_update + target:size(1)
+                    if instances_since_update > 100 then
+                        instances_since_update = instances_since_update - 100
                         print('loss', loss/instances_processed)
                     end
                 else
                     local pred = model:forward(inputs)
                     -- TODO: evaluate
                 end
+                print(collectgarbage('count'))
                 collectgarbage()
             end
         end
     end
-    exit()
 
     logger:add{['training error'] = loss }
     logger:style{['training error'] = '-'}
