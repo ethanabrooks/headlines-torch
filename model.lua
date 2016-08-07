@@ -7,7 +7,7 @@
 --
 
 require 'rnn'
-local buildDecoder = require 'decoder-alt'
+local buildDecoder = require 'decoder'
 
 
 local Seq2Seq, Parent = torch.class('nn.Seq2Seq', 'nn.Module')
